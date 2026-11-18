@@ -1,0 +1,409 @@
+// ==UserScript==
+// @name         BTK Akademi Arka Plan Tam Otomasyon (1.5x + Tik + Oto Oynat)
+// @match        *://*.btkakademi.gov.tr/*
+// @match        *://*.cinema8.com/*
+// @allFrames    true
+// @run-at       document-start
+// ==/UserScript==
+
+(() => {
+  const TARGET_SPEED = 4;
+  const IS_TOP = window.self === window.top;
+
+  // 1. Görünürlük, sekme gizliliği ve odak kontrollerini devre dışı bırak
+  const unlockVisibility = (win) => {
+    try {
+      if (!win || win._btkVisUnlocked) return;
+      win._btkVisUnlocked = true;
+      const doc = win.document;
+
+      Object.defineProperty(doc, 'hidden', { get: () => false, configurable: true });
+      Object.defineProperty(doc, 'visibilityState', { get: () => 'visible', configurable: true });
+      try {
+        Object.defineProperty(doc, 'hasFocus', { value: () => true, configurable: true });
+      } catch (e) {}
+
+      ['visibilitychange', 'webkitvisibilitychange', 'mozvisibilitychange', 'blur', 'pagehide', 'focusout'].forEach(ev => {
+        win.addEventListener(ev, e => e.stopImmediatePropagation(), true);
+        doc.addEventListener(ev, e => e.stopImmediatePropagation(), true);
+      });
+    } catch (e) {}
+  };
+
+  unlockVisibility(window);
+
+  // 2. Chrome'un arka plan sekmesini uyutmasını engelle (duyulmayan Web Audio akışı)
+  const keepTabAwake = () => {
+    let audioStarted = false;
+    const initSilentAudio = () => {
+      if (audioStarted) return;
+      try {
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        if (!AudioCtx) return;
+        const ctx = new AudioCtx();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        gain.gain.value = 0.00001;
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start();
+        if (ctx.state === 'suspended') ctx.resume();
+        audioStarted = true;
+      } catch (e) {}
+    };
+
+    initSilentAudio();
+    ['click', 'pointerdown', 'keydown'].forEach(ev => {
+      window.addEventListener(ev, initSilentAudio, { capture: true, passive: true });
+    });
+  };
+
+  keepTabAwake();
+
+  // 3. Arka planda yavaşlatılmayan Web Worker zamanlayıcısı
+  const createUnthrottledInterval = (fn, ms) => {
+    try {
+      const blob = new Blob([`setInterval(() => postMessage(1), ${ms});`], { type: 'application/javascript' });
+      const worker = new Worker(URL.createObjectURL(blob));
+      worker.onmessage = fn;
+      return worker;
+    } catch (e) {
+      return setInterval(fn, ms);
+    }
+  };
+
+  // 4. Arka planda dondurulan requestAnimationFrame ve IntersectionObserver'ı açık tut
+  const origRAF = window.requestAnimationFrame.bind(window);
+  window.requestAnimationFrame = (cb) => {
+    let fired = false;
+    const timer = setTimeout(() => {
+      if (!fired) {
+        fired = true;
+        cb(performance.now());
+      }
+    }, 35);
+    return origRAF((ts) => {
+      if (!fired) {
+        fired = true;
+        clearTimeout(timer);
+        cb(ts);
+      }
+    });
+  };
+
+  if (window.IntersectionObserver) {
+    const OrigIO = window.IntersectionObserver;
+    window.IntersectionObserver = function (callback, options) {
+      const wrappedCb = (entries, observer) => {
+        const fakeEntries = entries.map(entry => new Proxy(entry, {
+          get(target, prop) {
+            if (prop === 'isIntersecting') return true;
+            if (prop === 'intersectionRatio') return 1;
+            const val = Reflect.get(target, prop, target);
+            return typeof val === 'function' ? val.bind(target) : val;
+          }
+        }));
+        callback(fakeEntries, observer);
+      };
+      return new OrigIO(wrappedCb, options);
+    };
+    window.IntersectionObserver.prototype = OrigIO.prototype;
+  }
+
+  // 5. Arka planda sesli otomatik oynatma engellenirse otomatik sessize alıp başlat
+  const origPlay = HTMLMediaElement.prototype.play;
+  HTMLMediaElement.prototype.play = function (...args) {
+    const p = origPlay.apply(this, args);
+    if (p && typeof p.catch === 'function') {
+      return p.catch(() => {
+        this.muted = true;
+        this.defaultMuted = true;
+        this.setAttribute('muted', '');
+        return origPlay.apply(this, args);
+      });
+    }
+    return p;
+  };
+
+  // 6. ÜST SAYFA (btkakademi.gov.tr): Tik (✓) oluştuğu an sonraki videoya geç
+  if (IS_TOP) {
+    let lastSwitchTime = 0;
+    let currentLessonKey = '';
+    let lessonEnteredAt = 0;
+    let initialIconShape = '';
+    const knownTickShapes = new Set();
+
+    const triggerClick = (row) => {
+      if (!row) return;
+      let target = row.querySelector('a, button, [role="button"]');
+      if (!target) {
+        let cur = row;
+        for (let i = 0; i < 4 && cur && cur !== document.body; i++) {
+          if (cur.tagName === 'LI' || cur.getAttribute('role') === 'button' || getComputedStyle(cur).cursor === 'pointer') {
+            target = cur;
+            break;
+          }
+          cur = cur.parentElement;
+        }
+      }
+      target = target || row;
+      target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+      target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+      target.click();
+    };
+
+    const clickFallbackNextBtn = () => {
+      const buttons = Array.from(document.querySelectorAll('button, a, [role="button"]'));
+      const nextBtn = buttons.find(el => {
+        const t = (el.innerText || el.getAttribute('aria-label') || el.title || '').trim().toLowerCase();
+        return t === 'sonraki' || t === 'sonraki ders' || t === 'sonraki video' || t === 'ileri' || t.includes('sonraki derse');
+      });
+      if (nextBtn && !nextBtn.disabled) {
+        triggerClick(nextBtn);
+      }
+    };
+
+    const getLessonRows = () => {
+      const durationNodes = Array.from(document.querySelectorAll('span, div, p, small')).filter(el => {
+        if (el.children.length > 0) return false;
+        const txt = (el.textContent || '').trim();
+        return /^\d+\s*(sa|d|dk|sn)(\s+\d+\s*(d|dk|sn))?$/i.test(txt);
+      });
+
+      const rows = [];
+      const seen = new Set();
+
+      for (const durEl of durationNodes) {
+        let row = durEl.parentElement;
+        for (let i = 0; i < 4 && row; i++) {
+          const hasIcon = row.querySelector('svg, i');
+          const fullText = (row.textContent || '').trim();
+          const durText = (durEl.textContent || '').trim();
+          if (hasIcon && fullText.length > durText.length + 3 && row.offsetHeight > 20 && row.offsetHeight < 100) {
+            break;
+          }
+          row = row.parentElement;
+        }
+        if (row && !seen.has(row)) {
+          const fullText = (row.textContent || '').trim();
+          if (/\(\s*\d+\s*\/\s*\d+\s*\)/.test(fullText)) continue;
+          seen.add(row);
+          rows.push(row);
+        }
+      }
+      return rows;
+    };
+
+    const parseRgb = (str) => {
+      const m = (str || '').match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+      return m ? [+m[1], +m[2], +m[3]] : null;
+    };
+
+    const isBlue = (str) => {
+      const rgb = parseRgb(str);
+      return rgb ? (rgb[2] > 140 && (rgb[2] - rgb[0]) > 50) : false;
+    };
+
+    const isGreen = (str) => {
+      const rgb = parseRgb(str);
+      return rgb ? (rgb[1] > 120 && (rgb[1] - rgb[0]) > 35 && (rgb[1] - rgb[2]) > 20) : false;
+    };
+
+    const getIconShape = (row) => {
+      const icon = row.querySelector('svg, i');
+      if (!icon) return '';
+      if (icon.tagName.toLowerCase() === 'svg') {
+        const paths = Array.from(icon.querySelectorAll('path, polyline, polygon, circle'))
+          .map(p => p.getAttribute('d') || p.getAttribute('points') || '')
+          .join('|');
+        return `svg:${icon.getAttribute('data-icon') || ''}:${paths}`;
+      }
+      return `i:${icon.className}`;
+    };
+
+    const learnTickShapes = (rows) => {
+      for (const row of rows) {
+        const icon = row.querySelector('svg, i');
+        if (!icon) continue;
+        const pathEl = icon.querySelector('path, polyline, circle');
+        const colors = [
+          getComputedStyle(icon).color,
+          getComputedStyle(icon).fill,
+          pathEl ? getComputedStyle(pathEl).fill : '',
+          pathEl ? getComputedStyle(pathEl).stroke : ''
+        ];
+        if (colors.some(isGreen)) {
+          const shape = getIconShape(row);
+          if (shape) knownTickShapes.add(shape);
+        }
+      }
+    };
+
+    const isRowActive = (row) => {
+      if (row.getAttribute('aria-current') === 'true' || /active|selected/i.test(row.className || '')) return true;
+      const els = [row, ...row.querySelectorAll('span, div, p, a')];
+      return els.some(el => isBlue(getComputedStyle(el).color));
+    };
+
+    const isRowTicked = (row) => {
+      const shape = getIconShape(row);
+      if (!shape) return false;
+      if (knownTickShapes.has(shape)) return true;
+
+      const icon = row.querySelector('svg, i');
+      const pathEl = icon?.querySelector('path, polyline, circle');
+      const colors = [
+        icon ? getComputedStyle(icon).color : '',
+        pathEl ? getComputedStyle(pathEl).fill : '',
+        pathEl ? getComputedStyle(pathEl).stroke : ''
+      ];
+      return colors.some(isGreen);
+    };
+
+    const goNextLesson = (rows, activeIndex) => {
+      const now = Date.now();
+      if (now - lastSwitchTime < 3000) return;
+      lastSwitchTime = now;
+
+      if (activeIndex !== -1 && activeIndex + 1 < rows.length) {
+        const nextRow = rows[activeIndex + 1];
+        console.log('[BTK Oto] Sonraki videoya geçiliyor:', (nextRow.textContent || '').trim().slice(0, 45));
+        triggerClick(nextRow);
+        return;
+      }
+      clickFallbackNextBtn();
+    };
+
+    const checkAndAdvance = () => {
+      unlockVisibility(window);
+
+      // Arka planda oluşturulan Cinema8 iframe'inin tembel yüklenmesini (lazy-load) engelle
+      document.querySelectorAll('iframe').forEach(ifr => {
+        if (ifr.getAttribute('loading') === 'lazy') {
+          ifr.setAttribute('loading', 'eager');
+        }
+        const allow = ifr.getAttribute('allow') || '';
+        if (!allow.includes('autoplay')) {
+          ifr.setAttribute('allow', `${allow}; autoplay; fullscreen; encrypted-media`.replace(/^;\s*/, ''));
+        }
+      });
+
+      const rows = getLessonRows();
+      if (!rows.length) return;
+
+      learnTickShapes(rows);
+
+      const activeIndex = rows.findIndex(isRowActive);
+      if (activeIndex === -1) return;
+
+      const activeRow = rows[activeIndex];
+      const lessonKey = (activeRow.textContent || '').trim();
+      const shapeNow = getIconShape(activeRow);
+
+      if (lessonKey !== currentLessonKey) {
+        currentLessonKey = lessonKey;
+        lessonEnteredAt = Date.now();
+        initialIconShape = shapeNow;
+        return;
+      }
+
+      if (Date.now() - lessonEnteredAt < 2500) return;
+
+      const shapeChanged = initialIconShape && shapeNow && shapeNow !== initialIconShape;
+      const tickedNow = isRowTicked(activeRow);
+      const nextIsUnticked = activeIndex + 1 < rows.length && !isRowTicked(rows[activeIndex + 1]);
+
+      if ((shapeChanged && tickedNow) || (tickedNow && nextIsUnticked)) {
+        goNextLesson(rows, activeIndex);
+      }
+    };
+
+    // Hem Worker zamanlayıcısı hem de anlık DOM değişim gözlemcisi ile takip et
+    createUnthrottledInterval(checkAndAdvance, 700);
+    window.addEventListener('DOMContentLoaded', () => {
+      if (document.body) {
+        new MutationObserver(checkAndAdvance).observe(document.body, {
+          subtree: true,
+          childList: true,
+          attributes: true
+        });
+      }
+    });
+
+    window.addEventListener('message', e => {
+      if (e.data === 'BTK_NEXT_VIDEO') {
+        const rows = getLessonRows();
+        const activeIndex = rows.findIndex(isRowActive);
+        goNextLesson(rows, activeIndex);
+      }
+    });
+
+    return;
+  }
+
+  // 7. VİDEO ÇERÇEVESİ (cinema8.com): Arka planda otomatik oynat + 1.5x hız + ilerleme bildirimi
+  let lastOverlayClick = 0;
+
+  const keepPlayingInBackground = () => {
+    unlockVisibility(window);
+
+    if (window.videojs?.getAllPlayers) {
+      window.videojs.getAllPlayers().forEach(p => {
+        if (p.playbackRate() !== TARGET_SPEED) p.playbackRate(TARGET_SPEED);
+        if (p.paused() && !p.ended()) {
+          p.muted(true);
+          p.play();
+        }
+      });
+    }
+
+    const now = Date.now();
+    if (now - lastOverlayClick > 1200) {
+      const bigPlay = document.querySelector('.vjs-big-play-button, [class*="big-play"], button[aria-label*="Play" i]');
+      if (bigPlay && bigPlay.offsetParent !== null) {
+        lastOverlayClick = now;
+        bigPlay.click();
+      }
+    }
+
+    document.querySelectorAll('video').forEach(v => {
+      if (!v._btkHooked) {
+        v._btkHooked = true;
+        v.muted = true;
+        v.autoplay = true;
+        v.setAttribute('muted', '');
+        v.setAttribute('autoplay', '');
+
+        v.addEventListener('ratechange', () => {
+          if (v.playbackRate !== TARGET_SPEED) v.playbackRate = TARGET_SPEED;
+        });
+        v.addEventListener('loadedmetadata', () => {
+          v.playbackRate = TARGET_SPEED;
+          v.play();
+        });
+        v.addEventListener('canplay', () => {
+          v.playbackRate = TARGET_SPEED;
+          v.play();
+        });
+        v.addEventListener('pause', () => {
+          if (!v.ended) v.play();
+        });
+        v.addEventListener('ended', () => window.top.postMessage('BTK_NEXT_VIDEO', '*'));
+      }
+
+      if (v.playbackRate !== TARGET_SPEED) {
+        v.playbackRate = TARGET_SPEED;
+      }
+
+      if (v.paused && !v.ended) {
+        v.muted = true;
+        v.play();
+      } else if (!v.paused && !v.ended) {
+        // Arka planda Chrome native timeupdate olayını yavaşlatırsa Cinema8 sayacını canlı tut
+        v.dispatchEvent(new Event('timeupdate'));
+      }
+    });
+  };
+
+  createUnthrottledInterval(keepPlayingInBackground, 600);
+})();
