@@ -10,5 +10,10 @@ Sol altta çıkan "Küçült ve Mini Pencerede Aç" tuşuna tıkla ve normal iş
 
 
 
-https://github.com/user-attachments/assets/68a00f46-dd54-44c7-974f-4e8cdbb0fcf6
+
+https://github.com/user-attachments/assets/a9270f50-0f17-4942-8c6c-872be71ba327
+
+
+
+
 
