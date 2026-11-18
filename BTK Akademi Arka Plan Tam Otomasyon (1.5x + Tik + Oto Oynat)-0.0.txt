@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         BTK Akademi Arka Plan Tam Otomasyon (1.5x + Tik + Oto Oynat)
+// @name         BTK Akademi Arka Plan Tam Otomasyon (1.5x + Tik + Oto Bolum)
 // @match        *://*.btkakademi.gov.tr/*
 // @match        *://*.cinema8.com/*
 // @allFrames    true
@@ -32,11 +32,11 @@
 
   unlockVisibility(window);
 
-  // 2. Chrome'un arka plan sekmesini uyutmasını engelle (duyulmayan Web Audio akışı)
+  // 2. Arka plan uyku modunu engelle (duyulmayan Web Audio sinyali)
   const keepTabAwake = () => {
-    let audioStarted = false;
-    const initSilentAudio = () => {
-      if (audioStarted) return;
+    let started = false;
+    const initAudio = () => {
+      if (started) return;
       try {
         const AudioCtx = window.AudioContext || window.webkitAudioContext;
         if (!AudioCtx) return;
@@ -48,13 +48,12 @@
         gain.connect(ctx.destination);
         osc.start();
         if (ctx.state === 'suspended') ctx.resume();
-        audioStarted = true;
+        started = true;
       } catch (e) {}
     };
-
-    initSilentAudio();
+    initAudio();
     ['click', 'pointerdown', 'keydown'].forEach(ev => {
-      window.addEventListener(ev, initSilentAudio, { capture: true, passive: true });
+      window.addEventListener(ev, initAudio, { capture: true, passive: true });
     });
   };
 
@@ -110,7 +109,7 @@
     window.IntersectionObserver.prototype = OrigIO.prototype;
   }
 
-  // 5. Arka planda sesli otomatik oynatma engellenirse otomatik sessize alıp başlat
+  // 5. Sesli otomatik oynatma engellenirse otomatik sessize alıp başlat
   const origPlay = HTMLMediaElement.prototype.play;
   HTMLMediaElement.prototype.play = function (...args) {
     const p = origPlay.apply(this, args);
@@ -125,19 +124,21 @@
     return p;
   };
 
-  // 6. ÜST SAYFA (btkakademi.gov.tr): Tik (✓) oluştuğu an sonraki videoya geç
+  // 6. ÜST SAYFA (btkakademi.gov.tr): Tik takibi + kapalı bölüm açma + sonraki video
   if (IS_TOP) {
     let lastSwitchTime = 0;
+    let lastExpandTime = 0;
     let currentLessonKey = '';
     let lessonEnteredAt = 0;
+    let expectedDurationSec = 300;
     let initialIconShape = '';
     const knownTickShapes = new Set();
 
-    const triggerClick = (row) => {
-      if (!row) return;
-      let target = row.querySelector('a, button, [role="button"]');
+    const triggerClick = (el) => {
+      if (!el) return;
+      let target = el.querySelector('a, button, [role="button"]');
       if (!target) {
-        let cur = row;
+        let cur = el;
         for (let i = 0; i < 4 && cur && cur !== document.body; i++) {
           if (cur.tagName === 'LI' || cur.getAttribute('role') === 'button' || getComputedStyle(cur).cursor === 'pointer') {
             target = cur;
@@ -146,31 +147,33 @@
           cur = cur.parentElement;
         }
       }
-      target = target || row;
+      target = target || el;
       target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
       target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
       target.click();
     };
 
-    const clickFallbackNextBtn = () => {
-      const buttons = Array.from(document.querySelectorAll('button, a, [role="button"]'));
-      const nextBtn = buttons.find(el => {
-        const t = (el.innerText || el.getAttribute('aria-label') || el.title || '').trim().toLowerCase();
-        return t === 'sonraki' || t === 'sonraki ders' || t === 'sonraki video' || t === 'ileri' || t.includes('sonraki derse');
-      });
-      if (nextBtn && !nextBtn.disabled) {
-        triggerClick(nextBtn);
-      }
+    const parseDurationSeconds = (text) => {
+      let total = 0;
+      const h = text.match(/(\d+)\s*sa/i);
+      const m = text.match(/(\d+)\s*(?:d|dk)(?!\w)/i);
+      const s = text.match(/(\d+)\s*sn/i);
+      if (h) total += parseInt(h[1], 10) * 3600;
+      if (m) total += parseInt(m[1], 10) * 60;
+      if (s) total += parseInt(s[1], 10);
+      return total || 240;
     };
 
-    const getLessonRows = () => {
+    // Bölüm başlıklarını ("( 0/7 )", "( 4/8 )") ve açık ders satırlarını ayrı ayrı bul
+    const scanSidebar = () => {
       const durationNodes = Array.from(document.querySelectorAll('span, div, p, small')).filter(el => {
         if (el.children.length > 0) return false;
         const txt = (el.textContent || '').trim();
         return /^\d+\s*(sa|d|dk|sn)(\s+\d+\s*(d|dk|sn))?$/i.test(txt);
       });
 
-      const rows = [];
+      const lessons = [];
+      const headers = [];
       const seen = new Set();
 
       for (const durEl of durationNodes) {
@@ -179,19 +182,29 @@
           const hasIcon = row.querySelector('svg, i');
           const fullText = (row.textContent || '').trim();
           const durText = (durEl.textContent || '').trim();
-          if (hasIcon && fullText.length > durText.length + 3 && row.offsetHeight > 20 && row.offsetHeight < 100) {
+          if (hasIcon && fullText.length > durText.length + 3 && row.offsetHeight > 20 && row.offsetHeight < 110) {
             break;
           }
           row = row.parentElement;
         }
-        if (row && !seen.has(row)) {
-          const fullText = (row.textContent || '').trim();
-          if (/\(\s*\d+\s*\/\s*\d+\s*\)/.test(fullText)) continue;
-          seen.add(row);
-          rows.push(row);
+        if (!row || seen.has(row)) continue;
+        seen.add(row);
+
+        const fullText = (row.textContent || '').trim();
+        const countMatch = fullText.match(/\(\s*(\d+)\s*\/\s*(\d+)\s*\)/);
+
+        if (countMatch) {
+          headers.push({
+            el: row,
+            done: parseInt(countMatch[1], 10),
+            total: parseInt(countMatch[2], 10),
+            top: row.getBoundingClientRect().top
+          });
+        } else {
+          lessons.push(row);
         }
       }
-      return rows;
+      return { lessons, headers };
     };
 
     const parseRgb = (str) => {
@@ -260,150 +273,190 @@
       return colors.some(isGreen);
     };
 
-    const goNextLesson = (rows, activeIndex) => {
+    // Kapalı duran sıradaki bölüm başlığını bul ve aç
+    const expandNextIncompleteSection = (headers, afterTop = -Infinity) => {
+      const now = Date.now();
+      if (now - lastExpandTime < 2500) return false;
+
+      const candidate = headers.find(h => h.done < h.total && h.top > afterTop + 5);
+      if (candidate) {
+        lastExpandTime = now;
+        console.log('[BTK Oto] Kapalı bölüm açılıyor:', (candidate.el.textContent || '').trim().slice(0, 40));
+        triggerClick(candidate.el);
+        return true;
+      }
+      return false;
+    };
+
+    const goNextLesson = (lessons, headers, activeIndex) => {
       const now = Date.now();
       if (now - lastSwitchTime < 3000) return;
-      lastSwitchTime = now;
 
-      if (activeIndex !== -1 && activeIndex + 1 < rows.length) {
-        const nextRow = rows[activeIndex + 1];
+      // 1. Açık listede bir sonraki ders varsa doğrudan ona tıkla
+      if (activeIndex !== -1 && activeIndex + 1 < lessons.length) {
+        lastSwitchTime = now;
+        const nextRow = lessons[activeIndex + 1];
         console.log('[BTK Oto] Sonraki videoya geçiliyor:', (nextRow.textContent || '').trim().slice(0, 45));
         triggerClick(nextRow);
         return;
       }
-      clickFallbackNextBtn();
+
+      // 2. Açık bölümün son videosundaysak alttaki kapalı bölümü aç
+      const activeTop = activeIndex !== -1 ? lessons[activeIndex].getBoundingClientRect().top : -Infinity;
+      if (expandNextIncompleteSection(headers, activeTop)) {
+        return;
+      }
+
+      // 3. Yedek: Sayfadaki "Sonraki" butonunu dene
+      const buttons = Array.from(document.querySelectorAll('button, a, [role="button"]'));
+      const nextBtn = buttons.find(el => {
+        const t = (el.innerText || el.getAttribute('aria-label') || el.title || '').trim().toLowerCase();
+        return t === 'sonraki' || t === 'sonraki ders' || t === 'sonraki video' || t === 'ileri' || t.includes('sonraki derse');
+      });
+      if (nextBtn && !nextBtn.disabled) {
+        lastSwitchTime = now;
+        triggerClick(nextBtn);
+      }
     };
 
     const checkAndAdvance = () => {
       unlockVisibility(window);
 
-      // Arka planda oluşturulan Cinema8 iframe'inin tembel yüklenmesini (lazy-load) engelle
       document.querySelectorAll('iframe').forEach(ifr => {
-        if (ifr.getAttribute('loading') === 'lazy') {
-          ifr.setAttribute('loading', 'eager');
-        }
+        if (ifr.getAttribute('loading') === 'lazy') ifr.setAttribute('loading', 'eager');
         const allow = ifr.getAttribute('allow') || '';
         if (!allow.includes('autoplay')) {
           ifr.setAttribute('allow', `${allow}; autoplay; fullscreen; encrypted-media`.replace(/^;\s*/, ''));
         }
       });
 
-      const rows = getLessonRows();
-      if (!rows.length) return;
+      const { lessons, headers } = scanSidebar();
+      if (!lessons.length && !headers.length) return;
 
-      learnTickShapes(rows);
+      learnTickShapes(lessons);
 
-      const activeIndex = rows.findIndex(isRowActive);
-      if (activeIndex === -1) return;
+      const activeIndex = lessons.findIndex(isRowActive);
 
-      const activeRow = rows[activeIndex];
+      // Aktif ders kapalı bir bölümün içinde kaldıysa o bölümü aç
+      if (activeIndex === -1) {
+        expandNextIncompleteSection(headers, -Infinity);
+        return;
+      }
+
+      const activeRow = lessons[activeIndex];
       const lessonKey = (activeRow.textContent || '').trim();
       const shapeNow = getIconShape(activeRow);
 
       if (lessonKey !== currentLessonKey) {
         currentLessonKey = lessonKey;
         lessonEnteredAt = Date.now();
+        expectedDurationSec = parseDurationSeconds(lessonKey);
         initialIconShape = shapeNow;
+        console.log(`[BTK Oto] Aktif ders: ${lessonKey.slice(0, 40)} (Tahmini süre: ${Math.round(expectedDurationSec / TARGET_SPEED)} sn)`);
         return;
       }
 
-      if (Date.now() - lessonEnteredAt < 2500) return;
+      const elapsedSec = (Date.now() - lessonEnteredAt) / 1000;
+      if (elapsedSec < 3) return;
 
       const shapeChanged = initialIconShape && shapeNow && shapeNow !== initialIconShape;
       const tickedNow = isRowTicked(activeRow);
-      const nextIsUnticked = activeIndex + 1 < rows.length && !isRowTicked(rows[activeIndex + 1]);
+      const nextIsUnticked = activeIndex + 1 < lessons.length && !isRowTicked(lessons[activeIndex + 1]);
+      // Video süresi 1.5x hızda dolduğu halde +30 sn geçtiyse takılmayı önlemek için zorla geç
+      const timedOut = elapsedSec > (expectedDurationSec / TARGET_SPEED) + 30;
 
-      if ((shapeChanged && tickedNow) || (tickedNow && nextIsUnticked)) {
-        goNextLesson(rows, activeIndex);
+      if ((shapeChanged && tickedNow) || (tickedNow && nextIsUnticked) || timedOut) {
+        if (timedOut) console.log('[BTK Oto] Süre aşımı koruması devreye girdi, sonraki derse geçiliyor...');
+        goNextLesson(lessons, headers, activeIndex);
       }
     };
 
-    // Hem Worker zamanlayıcısı hem de anlık DOM değişim gözlemcisi ile takip et
-    createUnthrottledInterval(checkAndAdvance, 700);
-    window.addEventListener('DOMContentLoaded', () => {
-      if (document.body) {
-        new MutationObserver(checkAndAdvance).observe(document.body, {
-          subtree: true,
-          childList: true,
-          attributes: true
-        });
-      }
-    });
+    createUnthrottledInterval(checkAndAdvance, 800);
 
     window.addEventListener('message', e => {
       if (e.data === 'BTK_NEXT_VIDEO') {
-        const rows = getLessonRows();
-        const activeIndex = rows.findIndex(isRowActive);
-        goNextLesson(rows, activeIndex);
+        const { lessons, headers } = scanSidebar();
+        const activeIndex = lessons.findIndex(isRowActive);
+        goNextLesson(lessons, headers, activeIndex);
       }
     });
 
     return;
   }
 
-  // 7. VİDEO ÇERÇEVESİ (cinema8.com): Arka planda otomatik oynat + 1.5x hız + ilerleme bildirimi
-  let lastOverlayClick = 0;
+  // 7. VİDEO ÇERÇEVESİ (cinema8.com): Gerçek ilerleme takibi + arayüz oynatma tetikleyici + 1.5x hız
+  let lastActionTime = 0;
+  let lastObservedTime = -1;
+  let lastProgressAt = Date.now();
 
   const keepPlayingInBackground = () => {
     unlockVisibility(window);
 
-    if (window.videojs?.getAllPlayers) {
-      window.videojs.getAllPlayers().forEach(p => {
-        if (p.playbackRate() !== TARGET_SPEED) p.playbackRate(TARGET_SPEED);
-        if (p.paused() && !p.ended()) {
-          p.muted(true);
-          p.play();
-        }
+    const video = document.querySelector('video');
+    if (!video) return;
+
+    if (!video._btkHooked) {
+      video._btkHooked = true;
+      video.muted = true;
+      video.autoplay = true;
+      video.setAttribute('muted', '');
+      video.setAttribute('autoplay', '');
+
+      video.addEventListener('ratechange', () => {
+        if (video.playbackRate !== TARGET_SPEED) video.playbackRate = TARGET_SPEED;
+      });
+      video.addEventListener('ended', () => {
+        console.log('[BTK Oto] Video sonuna ulaşıldı.');
+        window.top.postMessage('BTK_NEXT_VIDEO', '*');
       });
     }
 
-    const now = Date.now();
-    if (now - lastOverlayClick > 1200) {
-      const bigPlay = document.querySelector('.vjs-big-play-button, [class*="big-play"], button[aria-label*="Play" i]');
-      if (bigPlay && bigPlay.offsetParent !== null) {
-        lastOverlayClick = now;
-        bigPlay.click();
-      }
+    if (video.playbackRate !== TARGET_SPEED) {
+      video.playbackRate = TARGET_SPEED;
     }
 
-    document.querySelectorAll('video').forEach(v => {
-      if (!v._btkHooked) {
-        v._btkHooked = true;
-        v.muted = true;
-        v.autoplay = true;
-        v.setAttribute('muted', '');
-        v.setAttribute('autoplay', '');
+    // Videonun gerçekten saniye sayıp saymadığını kontrol et
+    if (Math.abs(video.currentTime - lastObservedTime) > 0.15) {
+      lastObservedTime = video.currentTime;
+      lastProgressAt = Date.now();
+    }
 
-        v.addEventListener('ratechange', () => {
-          if (v.playbackRate !== TARGET_SPEED) v.playbackRate = TARGET_SPEED;
-        });
-        v.addEventListener('loadedmetadata', () => {
-          v.playbackRate = TARGET_SPEED;
-          v.play();
-        });
-        v.addEventListener('canplay', () => {
-          v.playbackRate = TARGET_SPEED;
-          v.play();
-        });
-        v.addEventListener('pause', () => {
-          if (!v.ended) v.play();
-        });
-        v.addEventListener('ended', () => window.top.postMessage('BTK_NEXT_VIDEO', '*'));
+    const isStalled = (Date.now() - lastProgressAt) > 3500;
+    const now = Date.now();
+
+    if ((video.paused || isStalled) && !video.ended && (now - lastActionTime > 1200)) {
+      lastActionTime = now;
+
+      // 1. Önce Cinema8 / Video.js arayüz butonlarını tıkla (sayaç senkronizasyonu için)
+      const playSelectors = [
+        '.vjs-big-play-button',
+        '.vjs-play-control.vjs-paused',
+        'button[title*="Play" i]',
+        'button[title*="Oynat" i]',
+        '[class*="big-play"]'
+      ];
+      for (const sel of playSelectors) {
+        const btn = document.querySelector(sel);
+        if (btn && btn.offsetParent !== null) {
+          btn.click();
+          break;
+        }
       }
 
-      if (v.playbackRate !== TARGET_SPEED) {
-        v.playbackRate = TARGET_SPEED;
+      // 2. Video.js API üzerinden başlat
+      if (window.videojs?.getAllPlayers) {
+        window.videojs.getAllPlayers().forEach(p => {
+          p.muted(true);
+          if (p.playbackRate() !== TARGET_SPEED) p.playbackRate(TARGET_SPEED);
+          if (p.paused()) p.play();
+        });
       }
 
-      if (v.paused && !v.ended) {
-        v.muted = true;
-        v.play();
-      } else if (!v.paused && !v.ended) {
-        // Arka planda Chrome native timeupdate olayını yavaşlatırsa Cinema8 sayacını canlı tut
-        v.dispatchEvent(new Event('timeupdate'));
-      }
-    });
+      // 3. Doğrudan <video> elementini oynat
+      video.muted = true;
+      video.play();
+    }
   };
 
-  createUnthrottledInterval(keepPlayingInBackground, 600);
+  createUnthrottledInterval(keepPlayingInBackground, 700);
 })();
