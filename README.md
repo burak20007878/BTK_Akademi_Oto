@@ -1,12 +1,12 @@
-# BTK Akademi Otomatik Video Oynatıcı (Userscript)
+# BTK Akademi Video Otomatik Oynatma ve Ders Geçme Eklentisi
 
-BTK Akademi eğitim videolarını arka planda ve **Picture-in-Picture (PiP)** modunda otomatik olarak oynatıp bir sonraki derse geçiş yapan **Tampermonkey (JavaScript)** otomasyon betiği.
+**BTK Akademi dersleri hızlı bitirme**, videoları arka planda kesintisiz oynatma ve bir sonraki derse otomatik geçiş yapma amacıyla hazırlanmış **Tampermonkey (Userscript)** otomasyonudur.
 
 > **Not:** Projede ufak hatalar bulunabilir; geliştirmek veya hata bildirmek için Issue/PR açabilirsiniz.
 
-## Kurulum ve Kullanım
+## BTK Akademi Otomatik Video İzleme Nasıl Kurulur?
 
-1. Tarayıcınıza **Tampermonkey** eklentisini kurun ve bu repodaki userscript kodunu yeni betik olarak ekleyin.
+1. Tarayıcınıza **Tampermonkey** eklentisini kurun ve bu repodaki JavaScript kodunu yeni betik olarak ekleyin.
 2. Chrome'un arka plan sekme ve zamanlayıcı kısıtlamalarını devre dışı bırakmak için **Win + R** tuşlarına basıp aşağıdaki komutu çalıştırın:
 
 ```cmd
