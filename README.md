@@ -13,5 +13,7 @@
 chrome.exe --user-data-dir="C:\temp\btk_oto" --disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-background-timer-throttling --autoplay-policy=no-user-gesture-required
 ```
 
-https://github.com/user-attachments/assets/96912d4b-b830-4c3a-aafb-fc1f03b874b9
+https://github.com/user-attachments/assets/969ec711-a651-4638-97c2-eba08586aff0
+
+
 
