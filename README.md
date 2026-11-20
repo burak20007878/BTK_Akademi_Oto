@@ -1,14 +1,17 @@
-# BTK_Akademi_Oto
-BTK Akademi videoları otomatik arka olanda oynatıp diğer videolara geçmeyi sağlar. Hatalar vardır ama beraber düzeltebiliriz.
+# BTK Akademi Otomatik Video Oynatıcı (Userscript)
 
-Tempermonkey indirip verdiğim kodu içine ekleyin
+BTK Akademi eğitim videolarını arka planda ve **Picture-in-Picture (PiP)** modunda otomatik olarak oynatıp bir sonraki derse geçiş yapan **Tampermonkey (JavaScript)** otomasyon betiği.
 
-Win+R -> chrome.exe --user-data-dir="C:\temp\btk_oto" --disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-background-timer-throttling --autoplay-policy=no-user-gesture-required
+> **Not:** Projede ufak hatalar bulunabilir; geliştirmek veya hata bildirmek için Issue/PR açabilirsiniz.
 
-Yeni açılan chromedan BTK Akademiye girin ve dersi oynatmaya başlayın.
-Sol altta çıkan "Küçült ve Mini Pencerede Aç" tuşuna tıkla ve normal işlerine devam et
+## Kurulum ve Kullanım
 
+1. Tarayıcınıza **Tampermonkey** eklentisini kurun ve bu repodaki userscript kodunu yeni betik olarak ekleyin.
+2. Chrome'un arka plan sekme ve zamanlayıcı kısıtlamalarını devre dışı bırakmak için **Win + R** tuşlarına basıp aşağıdaki komutu çalıştırın:
 
+```cmd
+chrome.exe --user-data-dir="C:\temp\btk_oto" --disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-background-timer-throttling --autoplay-policy=no-user-gesture-required
+```
 
 https://github.com/user-attachments/assets/96912d4b-b830-4c3a-aafb-fc1f03b874b9
 
